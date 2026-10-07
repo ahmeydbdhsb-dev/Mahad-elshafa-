@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    // الأدمن = وثيقة في admins اسمها UID المستخدم (تُنشأ من الكونسول فقط)
+    function isAdmin() { return true; }
+    function str(v, max) { return v is string && v.size() <= max; }
+    function num(v)      { return v is number && v >= 0 && v <= 10000000; }
+
+    match /admins/{id} { allow read, write: if false; }
+
+    match /departments/{id} {
+      allow read, delete: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name','yearlyFee','sessionPrice'])
+        && request.resource.data.keys().hasAll(['name','yearlyFee','sessionPrice'])
+        && str(request.resource.data.name, 80) && request.resource.data.name.size() > 0
+        && num(request.resource.data.yearlyFee)
+        && num(request.resource.data.sessionPrice);
+    }
+
+    match /students/{id} {
+      allow read, delete: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name','phone','deptId','fee','joined'])
+        && request.resource.data.keys().hasAll(['name','deptId'])
+        && str(request.resource.data.name, 100) && request.resource.data.name.size() > 0
+        && str(request.resource.data.get('phone',''), 20)
+        && str(request.resource.data.get('joined',''), 10)
+        && str(request.resource.data.deptId, 40)
+        && exists(/databases/$(db)/documents/departments/$(request.resource.data.deptId))
+        && (request.resource.data.get('fee','') == '' || num(request.resource.data.get('fee','')));
+    }
+
+    // الدفعات لا تُعدَّل أبداً (سجل مالي ثابت)، تُضاف أو تُحذف فقط
+    match /payments/{id} {
+      allow read, delete: if isAdmin();
+      allow update: if false;
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['amount','date','note','studentId','deptId'])
+        && request.resource.data.keys().hasAll(['amount','date','studentId'])
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0 && request.resource.data.amount <= 10000000
+        && request.resource.data.date is string
+        && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && str(request.resource.data.get('note',''), 200)
+        && str(request.resource.data.get('deptId',''), 40)
+        && exists(/databases/$(db)/documents/students/$(request.resource.data.studentId));
+    }
+
+    match /{other=**} { allow read, write: if false; }
+  }
+}
