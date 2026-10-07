@@ -1,7 +1,6 @@
 import {collection,addDoc,updateDoc,deleteDoc,doc,onSnapshot,writeBatch,getDoc} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {signInWithEmailAndPassword,onAuthStateChanged,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
-import {db,auth} from "./firebase.js";
+import {db} from "./firebase.js";
 import {esc,clean} from "./security.js";
 
 const $=s=>document.querySelector(s);
@@ -16,21 +15,23 @@ function toast(m){const t=$('#t');t.textContent=m;t.classList.remove('hide');cle
 const tag=(p,f)=>f>0&&p>=f?'<span class="tag ok">مسدّد</span>':p>0?'<span class="tag mid">جزئي</span>':'<span class="tag no">لم يدفع</span>';
 const bar=(p,f)=>`<div class="pg"><i style="width:${pct(p,f)}%"></i></div>`;
 
-/* ---------- auth + realtime ---------- */
-let unsubs=[],stopIdle=null,fails=0,lockUntil=0;
+/* ---------- كلمة السر + realtime ---------- */
+const PW_HASH="4f9f10b304cfe9b2b11fcb1387f694e18f08ea358c7e9f567434d3ad6cbd7fc4";
+const sha=async t=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)))].map(x=>x.toString(16).padStart(2,'0')).join('');
+const store={get:()=>{try{return localStorage.getItem('ok')}catch{return null}},set:v=>{try{v?localStorage.setItem('ok',v):localStorage.removeItem('ok')}catch{}}};
+let unsubs=[],fails=0,lockUntil=0;
+function enter(on){
+ $('#login').classList.toggle('hide',on);$('#app').classList.toggle('hide',!on);
+ unsubs.forEach(f=>f());unsubs=[];
+ if(!on){S.deps=[];S.studs=[];S.pays=[];S.q='';S.fd='';A.close();$('#main').innerHTML='';return}
+ [['departments','deps'],['students','studs'],['payments','pays']].forEach(([c,k])=>
+  unsubs.push(onSnapshot(collection(db,c),sn=>{S[k]=sn.docs.map(d=>({id:d.id,...d.data()}));render()},e=>toast('خطأ: '+e.code))));
+}
 $('#go').onclick=async()=>{
  if(Date.now()<lockUntil)return toast('محاولات كثيرة، انتظر '+Math.ceil((lockUntil-Date.now())/1000)+' ثانية');
- try{await signInWithEmailAndPassword(auth,$('#em').value.trim(),$('#pw').value);fails=0;$('#pw').value=''}
- catch(e){fails++;if(fails>=5)lockUntil=Date.now()+Math.min(900,30*2**(fails-5))*1000;toast(e.code==='auth/too-many-requests'?'تم إيقاف المحاولات مؤقتاً':'بيانات الدخول غير صحيحة')}};
+ if(await sha($('#pw').value)===PW_HASH){fails=0;$('#pw').value='';store.set(PW_HASH);enter(true)}
+ else{fails++;if(fails>=5)lockUntil=Date.now()+Math.min(900,30*2**(fails-5))*1000;toast('كلمة السر غير صحيحة')}};
 $('#pw').onkeydown=e=>{if(e.key==='Enter')$('#go').click()};
-onAuthStateChanged(auth,async u=>{
- if(u){try{if(!(await getDoc(doc(db,'admins',u.uid))).exists()){toast('هذا الحساب غير مصرح له');return signOut(auth)}}catch{return signOut(auth)}}
- $('#login').classList.toggle('hide',!!u);$('#app').classList.toggle('hide',!u);
- unsubs.forEach(f=>f());unsubs=[];stopIdle?.();stopIdle=null;
- if(!u){S.deps=[];S.studs=[];S.pays=[];S.q='';S.fd='';A.close();$('#main').innerHTML=''}
- if(u)[['departments','deps'],['students','studs'],['payments','pays']].forEach(([c,k])=>
-  unsubs.push(onSnapshot(collection(db,c),sn=>{S[k]=sn.docs.map(d=>({id:d.id,...d.data()}));render()},e=>toast('خطأ: '+e.code))));
-});
 
 /* ---------- modal form ---------- */
 function form(title,fields,save){
@@ -47,7 +48,7 @@ const depOpts=()=>S.deps.map(d=>[d.id,d.name]);
 
 /* ---------- actions ---------- */
 const A={
- go(v){S.v=v;render()},open(id){S.fd=id;S.v='studs';render()},close(){$('#m').classList.remove('on')},out(){signOut(auth)},
+ go(v){S.v=v;render()},open(id){S.fd=id;S.v='studs';render()},close(){$('#m').classList.remove('on')},out(){store.set(null);enter(false)},
  dep(id){const d=id?dep(id):{};form(id?'تعديل القسم':'قسم جديد',[
   {k:'name',l:'اسم القسم',v:d.name,r:1},
   {k:'yearlyFee',l:'مصاريف السنة كاملة (ج.م)',t:'number',v:d.yearlyFee,r:1},
@@ -105,9 +106,9 @@ function render(){
   const q=S.q.toLowerCase(),list=S.studs.filter(s=>(!S.fd||s.deptId===S.fd)&&(!q||(s.name+(s.phone||'')).toLowerCase().includes(q)));
   h=`<div class="bar"><input id="q" placeholder="🔍 بحث بالاسم أو الهاتف" value="${esc(S.q)}"><select id="fd"><option value="">كل الأقسام</option>${S.deps.map(d=>`<option value="${d.id}" ${S.fd===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
   <button class="btn gold" data-a="stu" data-p="">+ طالب</button><button class="btn ghost" data-a="csv" data-p="">تصدير Excel</button></div>
-  <div class="panel"><div class="tw"><table><tr><th>الطالب</th><th>القسم</th><th>المطلوب</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
-  ${list.map(s=>{const f=feeOf(s),p=paidOf(s.id);return`<tr><td><b>${esc(s.name)}</b><br><small style="color:var(--mut)">${esc(s.phone||'')}</small></td><td>${esc(dep(s.deptId)?.name||'—')}</td>
-  <td>${money(f)}</td><td>${money(p)}${bar(p,f)}</td><td>${money(Math.max(0,f-p))}</td><td>${tag(p,f)}</td>
+  <div class="panel"><div class="tw"><table class="stu"><tr><th>الطالب</th><th>القسم</th><th>المطلوب</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th><th></th></tr>
+  ${list.map(s=>{const f=feeOf(s),p=paidOf(s.id);return`<tr><td><b>${esc(s.name)}</b><br><small style="color:var(--mut)">${esc(s.phone||'')}</small></td><td data-l="القسم">${esc(dep(s.deptId)?.name||'—')}</td>
+  <td data-l="المطلوب">${money(f)}</td><td data-l="المدفوع">${money(p)}${bar(p,f)}</td><td data-l="المتبقي">${money(Math.max(0,f-p))}</td><td data-l="الحالة">${tag(p,f)}</td>
   <td style="white-space:nowrap"><button class="btn sm gold" data-a="pay" data-p="${s.id}">+ دفعة</button> <button class="btn sm" data-a="info" data-p="${s.id}">سجل</button> <button class="btn sm ghost" data-a="stu" data-p="${s.id}">✎</button> <button class="btn sm red" data-a="delStu" data-p="${s.id}">✕</button></td></tr>`}).join('')||'<tr><td class="empty">لا يوجد طلاب</td></tr>'}</table></div></div>`;
  }
  const ae=document.activeElement?.id,pos=document.activeElement?.selectionStart;
@@ -119,3 +120,5 @@ function render(){
 document.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(!b)return;const n=b.dataset.a;
  if(!Object.hasOwn(A,n))return;A[n](...(b.dataset.p?b.dataset.p.split('|'):[]))});
 $('#m').addEventListener('click',e=>{if(e.target.id==='m')A.close()});
+enter(store.get()===PW_HASH);
+ 
